@@ -1,0 +1,8 @@
+[Unit]
+Description=dmi-spark DNS refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/dmi-spark dns

@@ -1,0 +1,11 @@
+Package: dmi-spark
+Version: {{VERSION}}-{{RELEASE}}
+Architecture: {{ARCH}}
+Maintainer: Robert Socha <socha@socha.it>
+Depends: systemd (>= 247), passwd
+Conflicts: kvm-no-cloud-init
+Replaces: kvm-no-cloud-init
+Section: admin
+Installed-Size: {{SIZE}}
+Priority: optional
+Description: Simple cloud-init replacement for local KVM/QEMU VMs

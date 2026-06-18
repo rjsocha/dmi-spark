@@ -1,0 +1,94 @@
+#!/bin/bash
+set -eufo pipefail
+IFS=$'\t\n'
+
+BASE=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+cd "${BASE}"
+
+source "${BASE}/version" || exit 222
+
+final() {
+  local RC=$?
+  trap - ERR EXIT
+  if [[ ${RC} -ne 0 ]]
+  then
+    printf -- "\nFATAL ...\n"
+    exit ${RC}
+  fi
+  exit 0
+}
+
+trap final ERR EXIT
+
+umask 0022
+
+ARCH="amd64"
+PLATFORM="linux"
+
+[[ ! -d .build ]] || rm -rf -- .build
+
+install -d -m 0755 .build/usr/sbin
+install -d -m 0755 .build/usr/libexec/dmi-spark
+install -d -m 0755 .build/lib/systemd/system
+install -d -m 0755 .build/DEBIAN
+
+install -m 0644 debian/control .build/DEBIAN/control
+for script in postinst postrm preinst prerm; do
+  if [[ -f debian/${script} ]]; then
+    install -m 0755 "debian/${script}" ".build/DEBIAN/${script}"
+    sed -i -e "s/{{VERSION}}/${VERSION}/g" -e "s/{{RELEASE}}/${RELEASE}/g" ".build/DEBIAN/${script}"
+  fi
+done
+
+install -m 0755 "binary/plotka-registry/plotka-register-${PLATFORM}-${ARCH}" .build/usr/libexec/dmi-spark/plotka-register
+install -m 0755 "binary/oem-string/oem-string-${PLATFORM}-${ARCH}" .build/usr/libexec/dmi-spark/oem-string
+install -m 0755 "source/dmi-spark" .build/usr/sbin/dmi-spark
+
+find .build/usr/libexec/dmi-spark -type f -perm /+x -exec strip {} \; -exec strip -x {} \;
+install -m 0644 source/systemd/dmi-spark.service .build/lib/systemd/system/dmi-spark.service
+install -m 0644 source/systemd/dmi-spark-dns.service .build/lib/systemd/system/dmi-spark-dns.service
+install -m 0644 source/systemd/dmi-spark-dns@.timer .build/lib/systemd/system/dmi-spark-dns@.timer
+
+sed -i -e "s/{{ARCH}}/${ARCH}/g" -e "s/{{VERSION}}/${VERSION}/g" -e "s/{{RELEASE}}/${RELEASE}/g" .build/DEBIAN/control
+SIZE_OF_PACKAGE="$(du -sB1024 ".build" | cut -f1)"
+sed -i -e "s/{{SIZE}}/${SIZE_OF_PACKAGE}/g" .build/DEBIAN/control
+
+mkdir -p result
+dpkg-deb -Z"${DEB_FORMAT}" --root-owner-group -b .build result
+[[ ! -d .build ]] || rm -rf -- .build
+
+ARCH="arm64"
+
+[[ ! -d .build ]] || rm -rf -- .build
+
+install -d -m 0755 .build/usr/sbin
+install -d -m 0755 .build/usr/libexec/dmi-spark
+install -d -m 0755 .build/lib/systemd/system
+install -d -m 0755 .build/DEBIAN
+
+install -m 0644 debian/control .build/DEBIAN/control
+for script in postinst postrm preinst prerm; do
+  if [[ -f debian/${script} ]]; then
+    install -m 0755 "debian/${script}" ".build/DEBIAN/${script}"
+    sed -i -e "s/{{VERSION}}/${VERSION}/g" -e "s/{{RELEASE}}/${RELEASE}/g" ".build/DEBIAN/${script}"
+  fi
+done
+
+install -m 0755 "binary/plotka-registry/plotka-register-${PLATFORM}-${ARCH}" .build/usr/libexec/dmi-spark/plotka-register
+install -m 0755 "binary/oem-string/oem-string-${PLATFORM}-${ARCH}" .build/usr/libexec/dmi-spark/oem-string
+install -m 0755 "source/dmi-spark" .build/usr/sbin/dmi-spark
+
+find .build/usr/libexec/dmi-spark -type f -perm /+x -exec aarch64-linux-gnu-strip {} \; -exec aarch64-linux-gnu-strip -x {} \;
+install -m 0644 source/systemd/dmi-spark.service .build/lib/systemd/system/dmi-spark.service
+install -m 0644 source/systemd/dmi-spark-dns.service .build/lib/systemd/system/dmi-spark-dns.service
+install -m 0644 source/systemd/dmi-spark-dns@.timer .build/lib/systemd/system/dmi-spark-dns@.timer
+
+sed -i -e "s/{{ARCH}}/${ARCH}/g" -e "s/{{VERSION}}/${VERSION}/g" -e "s/{{RELEASE}}/${RELEASE}/g" .build/DEBIAN/control
+SIZE_OF_PACKAGE="$(du -sB1024 ".build" | cut -f1)"
+sed -i -e "s/{{SIZE}}/${SIZE_OF_PACKAGE}/g" .build/DEBIAN/control
+
+mkdir -p result
+dpkg-deb -Z"${DEB_FORMAT}" --root-owner-group -b .build result
+[[ ! -d .build ]] || rm -rf -- .build
+
+printf -- "DONE\n"

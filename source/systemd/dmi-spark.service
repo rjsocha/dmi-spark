@@ -1,0 +1,13 @@
+[Unit]
+Description=KVM Guest Configuration
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/sbin/dmi-spark start
+ExecStop=/usr/sbin/dmi-spark stop
+Type=oneshot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

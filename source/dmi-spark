@@ -1,0 +1,284 @@
+#!/bin/bash
+# kvm/qemu guest configuration support via SMBIOS OEM strings...
+set -eufo pipefail
+IFS=$'\t\n'
+
+terminator() {
+  local RC=$?
+  trap - ERR EXIT
+  if [[ -n ${DEBUG_TRACE-} ]]; then
+    local frame=0 LINE SUB FILE
+    while IFS=' ' read -r LINE SUB FILE < <(caller "${frame}"); do
+      if [[ ${frame} -eq 0 ]]; then
+        printf -- '%s @ %s return code was %s\n' "${SUB}" "${LINE}" "${RC}" || true
+      else
+        printf -- "%-${frame}s%s @ %s\n" "" "${SUB}" "${LINE}" || true
+      fi
+      ((frame++)) || true
+    done
+  fi
+  exit "${RC}"
+}
+
+trap terminator ERR EXIT
+
+declare -A SPARK_USER=()
+declare -A SPARK_GROUP=()
+declare -A SPARK_SSH=()
+declare -A SPARK_CONFIG=()
+
+invalid_ug() {
+  ! [[ ${1} =~ ^[a-zA-Z0-9_.][a-zA-Z0-9_.-]{0,30}[a-zA-Z0-9_.$-]?$ ]]
+}
+
+invalid_hostname() {
+  ! [[ ${1} =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$ ]]
+}
+
+set_hostname() {
+  if [[ -n ${SPARK_CONFIG["hostname"]+set} ]]; then
+    hostnamectl hostname "${SPARK_CONFIG["hostname"]}"
+    if systemctl is-active --quiet rsyslog.service; then
+      systemctl reload-or-restart --quiet rsyslog.service || true
+    fi
+  fi
+}
+
+set_user() {
+  local user
+  for user in ${!SPARK_USER[@]}; do
+    if [[ ${user} == "root" ]] && [[ ! -e /var/opt/dmi-spark/user/${user} ]]; then
+      printf -- 'root:%s' "${SPARK_USER["root"]}" | chpasswd --encrypted || true
+      mkdir -m 0700 -p "/var/opt/dmi-spark/user/${user}" || continue
+    elif ! getent passwd "${user}" &>/dev/null; then
+      useradd -m -s /bin/bash "${user}" || continue
+      printf -- '%s:%s' "${user}" "${SPARK_USER["${user}"]}" | chpasswd --encrypted || true
+    fi
+  done
+}
+
+set_group() {
+  local user group groups
+  for user in ${!SPARK_GROUP[@]}; do
+    getent passwd "${user}" &>/dev/null || continue
+    groups="${SPARK_GROUP["${user}"]}"
+    for group in ${groups//:/$'\t'}; do
+      if [[ ! -e /var/opt/dmi-spark/group/${user}/${group} ]]; then
+        getent group "${group}" &>/dev/null || continue
+        gpasswd -a "${user}" "${group}" || true
+        mkdir -m 0700 -p "/var/opt/dmi-spark/group/${user}/${group}" || continue
+      fi
+    done
+  done
+}
+
+set_ssh_key() {
+  local user key home
+  for user in ${!SPARK_SSH[@]}; do
+    if [[ ! -e /var/opt/dmi-spark/ssh/${user} ]]; then
+      getent passwd "${user}" &>/dev/null || continue
+      if [[ -d /etc/ssh-pool ]]; then
+        printf -- '%s\n' "${SPARK_SSH["${user}"]}" >"/etc/ssh-pool/${user}"
+        chown root:root "/etc/ssh-pool/${user}"
+        if [[ ${user} == "root" ]]; then
+          chmod 0600 "/etc/ssh-pool/${user}"
+        else 
+          chmod 0644 "/etc/ssh-pool/${user}"
+        fi
+      fi
+      home="$(getent passwd "${user}" | cut -d: -f6)"
+      [[ -n ${home} ]] || continue
+      mkdir -p "${home}/.ssh" || continue
+      chmod 0700 "${home}/.ssh"
+      chown "${user}:${user}" "${home}/.ssh"
+      printf -- '%s\n' "${SPARK_SSH["${user}"]}" >"${home}/.ssh/authorized_keys"
+      chmod 0600 "${home}/.ssh/authorized_keys"
+      chown "${user}:${user}" "${home}/.ssh/authorized_keys"
+      mkdir -m 0700 -p "/var/opt/dmi-spark/ssh/${user}" || continue
+    fi
+  done
+}
+
+dns_update() {
+  local op="${1:-+}"
+  if [[ -n ${SPARK_CONFIG["registry_method"]+set} ]]; then
+    local method="${SPARK_CONFIG["registry_method"]}"
+    if [[ ${method} == "dns" ]]; then
+      local registry="${SPARK_CONFIG["registry"]+@}${SPARK_CONFIG["registry"]-}"
+      /usr/libexec/dmi-spark/plotka-register "${op}" ${registry} || return 1
+    fi
+  fi
+}
+
+
+dns_refresh() {
+  if [[ -n ${SPARK_CONFIG["registry_method"]+set} ]]; then
+    local count=0
+    until dns_update; do
+      [[ ${count} -lt 50 ]] || break
+      ((count++)) || true
+      sleep 0.1
+    done
+  fi
+}
+
+dns_unregister() {
+  dns_update - || true
+}
+
+dns_register() {
+  if [[ -n ${SPARK_CONFIG["registry_method"]+set} ]]; then
+    local count=0
+    until dns_update; do
+      [[ ${count} -lt 120 ]] || break
+      ((count++)) || true
+      sleep 0.5
+    done
+    if [[ -n ${SPARK_CONFIG["registry_refresh"]+set} ]]; then
+      local time
+      time="${SPARK_CONFIG["registry_refresh"]}"
+      if [[ ${time} -ne 0 ]]; then
+        systemctl start --quiet "dmi-spark-dns@${time}.timer" || true
+      fi
+    fi
+  fi
+}
+
+dmi_decode() {
+  local i count dmi oem=""
+  count="$(/usr/libexec/dmi-spark/oem-string 0 2>/dev/null)" || return 1
+  [[ ${count} =~ ^[0-9]+$ ]] || return 1
+  for (( i=1; i<=${count}; i++)); do
+    if dmi="$(/usr/libexec/dmi-spark/oem-string "${i}")"; then
+      if [[ ${dmi} =~ ^dmi-spark:: ]]; then
+        oem="${dmi:11}"
+        break
+      fi
+    fi
+  done
+  [[ -n ${oem} ]] || return 1
+  local data u p k h r m t
+  # https://systemd.io/USER_NAMES/
+  for data in ${oem//!/$'\t'}; do
+    case "${data}" in
+      u:*)
+        data="${data:2}"
+        if [[ ! ${data} =~ @ ]]; then
+          printf -- 'WARNING: malformed user configuration ...\n' >&2
+          continue
+        fi
+        u="${data%%@*}"
+        p="${data#*@}"
+        if invalid_ug "${u}"; then
+          printf -- 'WARNING: malformed username ...\n' >&2
+          continue
+        fi
+        if p="$(printf -- '%s' "${p}" | base64 -d)"; then
+          SPARK_USER["${u}"]="${p}"
+        else
+          printf -- 'WARNING: malformed password ...\n' >&2
+        fi
+      ;;
+      g:*)
+        data="${data:2}"
+        if [[ ! ${data} =~ @ ]]; then
+          printf -- 'WARNING: malformed group configuration ...\n' >&2
+          continue
+        fi
+        u="${data%%@*}"
+        g="${data#*@}"
+        if invalid_ug "${u}"; then
+          printf -- 'WARNING: malformed username ...\n' >&2
+          continue
+        fi
+        if invalid_ug "${g}"; then
+          printf -- 'WARNING: malformed groupname ...\n' >&2
+          continue
+        fi
+        if [[ -n ${SPARK_GROUP["${u}"]+set} ]]; then
+          SPARK_GROUP["${u}"]+=":${g}"
+        else
+          SPARK_GROUP["${u}"]+="${g}"
+        fi
+      ;;
+      s:*)
+        data="${data:2}"
+        if [[ ! ${data} =~ @ ]]; then
+          printf -- 'WARNING: malformed ssh key configuration ...\n' >&2
+          continue
+        fi
+        u="${data%%@*}"
+        k="${data#*@}"
+        if invalid_ug "${u}"; then
+          printf -- 'WARNING: malformed ssh username ...\n' >&2
+          continue
+        fi
+        if k="$(printf -- '%s' "${k}" | base64 -d)"; then
+          SPARK_SSH["${u}"]="${k}"
+        else
+          printf -- 'WARNING: malformed ssh key ...\n' >&2
+        fi
+      ;;
+      h:*)
+        h="${data:2}"
+        if invalid_hostname "${h}"; then
+          printf -- 'WARNING: malformed hostname ...\n' >&2
+          continue
+        fi
+        SPARK_CONFIG["hostname"]="${h}"
+      ;;
+      r:*)
+        r="${data:2}"
+        if invalid_hostname "${r}"; then
+          printf -- 'WARNING: malformed registry ...\n' >&2
+          continue
+        fi
+        SPARK_CONFIG["registry"]="${r}"
+      ;;
+      m:*)
+        local time="3600"
+        m="${data:2}"
+        if [[ ${m} =~ :[0-9]+$ ]]; then
+          time="${m##*:}"
+          m="${m%:*}"
+        fi
+        SPARK_CONFIG["registry_refresh"]="${time}"
+        SPARK_CONFIG["registry_method"]="${m}"
+      ;;
+     *)
+       printf -- 'WARNING: uknown configuration key "%s" ...\n' "${data}" >&2
+    esac
+  done
+  return 0
+}
+
+dmi_start() {
+  set_hostname
+  set_user
+  set_group
+  set_ssh_key
+  dns_register
+}
+
+dmi_stop() {
+  systemctl stop --quiet 'dmi-spark-dns@*.timer' 2>/dev/null || true
+  systemctl stop --quiet dmi-spark-dns@service 2>/dev/null || true
+  dns_unregister
+}
+
+main() {
+  dmi_decode || exit 0
+  case "${1-}" in
+    start)
+      dmi_start
+      ;;
+    stop)
+      dmi_stop
+      ;;
+    dns)
+      dns_refresh
+      ;;
+  esac
+}
+
+main "${@}"

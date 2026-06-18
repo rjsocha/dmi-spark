@@ -1,0 +1,8 @@
+[Unit]
+Description=dmi-spark DNS refresh
+
+[Timer]
+OnActiveSec=%i
+OnUnitActiveSec=%i
+AccuracySec=1s
+Unit=dmi-spark-dns.service
