@@ -6,13 +6,13 @@ IFS=$'\t\n'
 terminator() {
   local RC=$?
   trap - ERR EXIT
-  if [[ -n ${DEBUG_TRACE-} ]]; then
+  if [[ -n ${DEBUG_BACKTRACE-} ]]; then
     local frame=0 LINE SUB FILE
     while IFS=' ' read -r LINE SUB FILE < <(caller "${frame}"); do
       if [[ ${frame} -eq 0 ]]; then
-        printf -- '%s @ %s return code was %s\n' "${SUB}" "${LINE}" "${RC}" || true
+        printf -- '%s @ %s return code was %s\n' "${SUB}" "${LINE}" "${RC}" >&2 || true
       else
-        printf -- "%-${frame}s%s @ %s\n" "" "${SUB}" "${LINE}" || true
+        printf -- "%-${frame}s%s @ %s\n" "" "${SUB}" "${LINE}" >&2 || true
       fi
       ((frame++)) || true
     done
@@ -35,12 +35,17 @@ invalid_hostname() {
   ! [[ ${1} =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$ ]]
 }
 
-set_hostname() {
+set_hostname_transient() {
   if [[ -n ${SPARK_CONFIG["hostname"]+set} ]]; then
+    printf -- 'dmi-spark: setting transient hostname to %s\n' "${SPARK_CONFIG["hostname"]}"
+    hostname "${SPARK_CONFIG["hostname"]}" || true
+  fi
+}
+
+set_hostname_static() {
+  if [[ -n ${SPARK_CONFIG["hostname"]+set} ]]; then
+    printf -- 'dmi-spark: setting static hostname to %s\n' "${SPARK_CONFIG["hostname"]}"
     hostnamectl hostname "${SPARK_CONFIG["hostname"]}"
-    if systemctl is-active --quiet rsyslog.service; then
-      systemctl reload-or-restart --quiet rsyslog.service || true
-    fi
   fi
 }
 
@@ -48,9 +53,11 @@ set_user() {
   local user
   for user in ${!SPARK_USER[@]}; do
     if [[ ${user} == "root" ]] && [[ ! -e /var/opt/dmi-spark/user/${user} ]]; then
+      printf -- 'dmi-spark: setting password for user %s\n' "${user}"
       printf -- 'root:%s' "${SPARK_USER["root"]}" | chpasswd --encrypted || true
       mkdir -m 0700 -p "/var/opt/dmi-spark/user/${user}" || continue
     elif ! getent passwd "${user}" &>/dev/null; then
+      printf -- 'dmi-spark: creating user %s\n' "${user}"
       useradd -m -s /bin/bash "${user}" || continue
       printf -- '%s:%s' "${user}" "${SPARK_USER["${user}"]}" | chpasswd --encrypted || true
     fi
@@ -65,6 +72,7 @@ set_group() {
     for group in ${groups//:/$'\t'}; do
       if [[ ! -e /var/opt/dmi-spark/group/${user}/${group} ]]; then
         getent group "${group}" &>/dev/null || continue
+        printf -- 'dmi-spark: adding user %s to group %s\n' "${user}" "${group}"
         gpasswd -a "${user}" "${group}" || true
         mkdir -m 0700 -p "/var/opt/dmi-spark/group/${user}/${group}" || continue
       fi
@@ -77,6 +85,7 @@ set_ssh_key() {
   for user in ${!SPARK_SSH[@]}; do
     if [[ ! -e /var/opt/dmi-spark/ssh/${user} ]]; then
       getent passwd "${user}" &>/dev/null || continue
+      printf -- 'dmi-spark: installing ssh authorized key for user %s\n' "${user}"
       if [[ -d /etc/ssh-pool ]]; then
         printf -- '%s\n' "${SPARK_SSH["${user}"]}" >"/etc/ssh-pool/${user}"
         chown root:root "/etc/ssh-pool/${user}"
@@ -113,6 +122,7 @@ dns_update() {
 
 dns_refresh() {
   if [[ -n ${SPARK_CONFIG["registry_method"]+set} ]]; then
+    printf -- 'dmi-spark: refreshing DNS registration\n'
     local count=0
     until dns_update; do
       [[ ${count} -lt 50 ]] || break
@@ -123,11 +133,13 @@ dns_refresh() {
 }
 
 dns_unregister() {
+  printf -- 'dmi-spark: unregistering from DNS registry\n'
   dns_update - || true
 }
 
 dns_register() {
   if [[ -n ${SPARK_CONFIG["registry_method"]+set} ]]; then
+    printf -- 'dmi-spark: registering with DNS registry\n'
     local count=0
     until dns_update; do
       [[ ${count} -lt 120 ]] || break
@@ -138,6 +150,7 @@ dns_register() {
       local time
       time="${SPARK_CONFIG["registry_refresh"]}"
       if [[ ${time} -ne 0 ]]; then
+        printf -- 'dmi-spark: starting DNS refresh timer (every %ss)\n' "${time}"
         systemctl start --quiet "dmi-spark-dns@${time}.timer" || true
       fi
     fi
@@ -252,28 +265,41 @@ dmi_decode() {
   return 0
 }
 
+dmi_hostname() {
+  set_hostname_transient
+}
+
 dmi_start() {
-  set_hostname
+  set_hostname_static
   set_user
   set_group
   set_ssh_key
+}
+
+dmi_register() {
   dns_register
 }
 
-dmi_stop() {
+dmi_unregister() {
   systemctl stop --quiet 'dmi-spark-dns@*.timer' 2>/dev/null || true
-  systemctl stop --quiet dmi-spark-dns@service 2>/dev/null || true
+  systemctl stop --quiet dmi-spark-dns.service 2>/dev/null || true
   dns_unregister
 }
 
 main() {
   dmi_decode || exit 0
   case "${1-}" in
+    hostname)
+      dmi_hostname
+      ;;
     start)
       dmi_start
       ;;
-    stop)
-      dmi_stop
+    register)
+      dmi_register
+      ;;
+    unregister|stop)
+      dmi_unregister
       ;;
     dns)
       dns_refresh

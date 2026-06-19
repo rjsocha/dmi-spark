@@ -5,6 +5,9 @@ if [ "$1" = "remove" ]; then
   if [ -d /run/systemd/system ]; then
     systemctl stop 'dmi-spark-dns@*.timer' >/dev/null 2>&1 || true
     systemctl stop dmi-spark-dns.service >/dev/null 2>&1 || true
+    systemctl disable dmi-spark-unregister.service >/dev/null 2>&1 || true
+    systemctl disable --now dmi-spark-register.service >/dev/null 2>&1 || true
     systemctl disable --now dmi-spark.service >/dev/null 2>&1 || true
+    systemctl disable --now dmi-spark-hostname.service >/dev/null 2>&1 || true
   fi
 fi

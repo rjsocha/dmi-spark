@@ -45,7 +45,10 @@ install -m 0755 "binary/oem-string/oem-string-${PLATFORM}-${ARCH}" .build/usr/li
 install -m 0755 "source/dmi-spark" .build/usr/sbin/dmi-spark
 
 find .build/usr/libexec/dmi-spark -type f -perm /+x -exec strip {} \; -exec strip -x {} \;
+install -m 0644 source/systemd/dmi-spark-hostname.service .build/lib/systemd/system/dmi-spark-hostname.service
 install -m 0644 source/systemd/dmi-spark.service .build/lib/systemd/system/dmi-spark.service
+install -m 0644 source/systemd/dmi-spark-register.service .build/lib/systemd/system/dmi-spark-register.service
+install -m 0644 source/systemd/dmi-spark-unregister.service .build/lib/systemd/system/dmi-spark-unregister.service
 install -m 0644 source/systemd/dmi-spark-dns.service .build/lib/systemd/system/dmi-spark-dns.service
 install -m 0644 source/systemd/dmi-spark-dns@.timer .build/lib/systemd/system/dmi-spark-dns@.timer
 
@@ -79,7 +82,10 @@ install -m 0755 "binary/oem-string/oem-string-${PLATFORM}-${ARCH}" .build/usr/li
 install -m 0755 "source/dmi-spark" .build/usr/sbin/dmi-spark
 
 find .build/usr/libexec/dmi-spark -type f -perm /+x -exec aarch64-linux-gnu-strip {} \; -exec aarch64-linux-gnu-strip -x {} \;
+install -m 0644 source/systemd/dmi-spark-hostname.service .build/lib/systemd/system/dmi-spark-hostname.service
 install -m 0644 source/systemd/dmi-spark.service .build/lib/systemd/system/dmi-spark.service
+install -m 0644 source/systemd/dmi-spark-register.service .build/lib/systemd/system/dmi-spark-register.service
+install -m 0644 source/systemd/dmi-spark-unregister.service .build/lib/systemd/system/dmi-spark-unregister.service
 install -m 0644 source/systemd/dmi-spark-dns.service .build/lib/systemd/system/dmi-spark-dns.service
 install -m 0644 source/systemd/dmi-spark-dns@.timer .build/lib/systemd/system/dmi-spark-dns@.timer
 

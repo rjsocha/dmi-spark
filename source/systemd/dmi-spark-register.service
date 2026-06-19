@@ -1,9 +1,10 @@
 [Unit]
 Description=KVM Guest Configuration
-After=local-fs.target dmi-spark-hostname.service
+After=network-online.target dmi-spark.service
+Wants=network-online.target
 
 [Service]
-ExecStart=/usr/sbin/dmi-spark start
+ExecStart=/usr/sbin/dmi-spark register
 Type=oneshot
 RemainAfterExit=yes
 
